@@ -1,3 +1,9 @@
+/*
+ * Author: Tomas Cejka <cejkato2@fit.cvut.cz>
+ * Organization: FIT - CTU
+ * Date: 2011-2012
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -18,6 +24,7 @@
 #define DEFAULT_MEMORY_SIZE 10
 #define DEFAULT_CHUNK_SIZE 10
 
+/*| entry of list of clients */
 typedef struct clientl {
 	int sd;
 	size_t addrlen;
@@ -35,13 +42,22 @@ static char *shared_memory = NULL;
 static fd_set fdclientset;
 static struct timeval timeout = { 1, 0 };
 
+/* TODO signal for ending */
 static int is_terminated = 0;
 
+/*|
+ * \brief Handle incomming message from buffer
+ * \param[in] sd - socket descriptor of client
+ * \param[in] bf - buffer with incomming message
+ * \param[in] bs - size of incomming message
+ */
 void handle_message(int sd, char *bf, size_t bs)
 {
   void *p;
 	fprintf(stderr, "from %i got message len %i: %s\n", sd, bs, bf);
-        if (strncmp(bf, "h", bs) == 0) {
+        if (strncmp(bf, "m", bs) == 0) {
+          /* memory configuration */
+        } else if (strncmp(bf, "h", bs) == 0) {
           /* host record */
         } else if (strncmp(bf, "w", bs) == 0) {
           /* write */
@@ -50,6 +66,11 @@ void handle_message(int sd, char *bf, size_t bs)
         }
 }
 
+/*!
+ * \brief randomly write or read from shared memory
+ *
+ * read is local, write is shared and causes replication
+ */
 void handle_send()
 {
   fprintf(stderr, "send\n");
@@ -64,7 +85,9 @@ int main(int argc, char *argv[])
 {
 	struct addrinfo hints;
 	struct addrinfo *result, *rp;
-	int sfd, s;
+        /*! sfd - local server socket descriptor */
+	int sfd;
+        int s;
 	struct sockaddr_storage peer_addr;
 	socklen_t peer_addr_len;
 	ssize_t nread;
@@ -191,7 +214,7 @@ int main(int argc, char *argv[])
 	 * otherwise connect to node structure */
 
 	if (master_flag == 0) {
-		/* connect to structure */
+		/* connect to structure of node (I am just a client)*/
 		do {
 			s = getaddrinfo(target_addr, target_port, &hints,
 					&result);
@@ -219,6 +242,8 @@ int main(int argc, char *argv[])
 		}
 		fprintf(stderr, "master sd: %d\n", clientlist[0].sd);
 		freeaddrinfo(result);
+
+                /* TODO receive memory configuration and the list of nodes */
 
 	} else {
 		/* allocate given chunk of memory */
