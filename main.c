@@ -53,17 +53,17 @@ static int is_terminated = 0;
  */
 void handle_message(int sd, char *bf, size_t bs)
 {
-  void *p;
+	void *p;
 	fprintf(stderr, "from %i got message len %i: %s\n", sd, bs, bf);
-        if (strncmp(bf, "m", bs) == 0) {
-          /* memory configuration */
-        } else if (strncmp(bf, "h", bs) == 0) {
-          /* host record */
-        } else if (strncmp(bf, "w", bs) == 0) {
-          /* write */
-        } else if (strncmp(bf, "r", bs) == 0) {
-          /* read */
-        }
+	if (strncmp(bf, "m", bs) == 0) {
+		/* memory configuration */
+	} else if (strncmp(bf, "h", bs) == 0) {
+		/* host record */
+	} else if (strncmp(bf, "w", bs) == 0) {
+		/* write */
+	} else if (strncmp(bf, "r", bs) == 0) {
+		/* read */
+	}
 }
 
 /*!
@@ -73,21 +73,21 @@ void handle_message(int sd, char *bf, size_t bs)
  */
 void handle_send()
 {
-  fprintf(stderr, "send\n");
-  if (random() >= 0.5) {
-    /* write */
-  } else {
-    /* read */
-  }
+	fprintf(stderr, "send\n");
+	if (random() >= 0.5) {
+		/* write */
+	} else {
+		/* read */
+	}
 }
 
 int main(int argc, char *argv[])
 {
 	struct addrinfo hints;
 	struct addrinfo *result, *rp;
-        /*! sfd - local server socket descriptor */
+	/*! sfd - local server socket descriptor */
 	int sfd;
-        int s;
+	int s;
 	struct sockaddr_storage peer_addr;
 	socklen_t peer_addr_len;
 	ssize_t nread;
@@ -214,7 +214,7 @@ int main(int argc, char *argv[])
 	 * otherwise connect to node structure */
 
 	if (master_flag == 0) {
-		/* connect to structure of node (I am just a client)*/
+		/* connect to structure of node (I am just a client) */
 		do {
 			s = getaddrinfo(target_addr, target_port, &hints,
 					&result);
@@ -243,7 +243,7 @@ int main(int argc, char *argv[])
 		fprintf(stderr, "master sd: %d\n", clientlist[0].sd);
 		freeaddrinfo(result);
 
-                /* TODO receive memory configuration and the list of nodes */
+		/* TODO receive memory configuration and the list of nodes */
 
 	} else {
 		/* allocate given chunk of memory */
@@ -321,9 +321,9 @@ int main(int argc, char *argv[])
 			}
 		}
 
-                handle_send();
+		handle_send();
 
-                sleep(100);
+		sleep(100);
 	}
 	free(shared_memory);
 
