@@ -23,6 +23,7 @@
 #define MAX_CLIENTS_NO 10
 #define DEFAULT_MEMORY_SIZE 10
 #define DEFAULT_CHUNK_SIZE 10
+#define RETRY_SEND 3
 
 /*| entry of list of clients */
 typedef struct clientl {
@@ -30,6 +31,12 @@ typedef struct clientl {
 	size_t addrlen;
 	struct sockaddr *addr;
 } clientl_t;
+
+struct memory_config {
+	char msgtype;
+	uint32_t memory_size;
+	uint32_t chunk_size;
+} __attribute__ ((__packed__));
 
 static int master_flag = 0;
 static char *local_port = NULL;
@@ -40,7 +47,9 @@ static uint32_t chunk_size = DEFAULT_CHUNK_SIZE;
 static clientl_t clientlist[MAX_CLIENTS_NO];
 static char *shared_memory = NULL;
 static fd_set fdclientset;
-static struct timeval timeout = { 1, 0 };
+static struct timeval timeout = { 0, 10000 };
+
+static char buf[BUF_SIZE];
 
 /* TODO signal for ending */
 static int is_terminated = 0;
@@ -54,9 +63,15 @@ static int is_terminated = 0;
 void handle_message(int sd, char *bf, size_t bs)
 {
 	void *p;
+	struct memory_config *m;
 	fprintf(stderr, "from %i got message len %i: %s\n", sd, bs, bf);
 	if (strncmp(bf, "m", bs) == 0) {
 		/* memory configuration */
+		m = (struct memory_config *)bf;
+		memory_size = m->memory_size;
+		chunk_size = m->chunk_size;
+		fprintf(stderr, "Set memory to: %i x %i\n", memory_size,
+			chunk_size);
 	} else if (strncmp(bf, "h", bs) == 0) {
 		/* host record */
 	} else if (strncmp(bf, "w", bs) == 0) {
@@ -64,6 +79,34 @@ void handle_message(int sd, char *bf, size_t bs)
 	} else if (strncmp(bf, "r", bs) == 0) {
 		/* read */
 	}
+}
+
+void send_memory_config(int sd)
+{
+	struct memory_config m;
+	int rv;
+	int i;
+	m.msgtype = 'm';
+	m.memory_size = memory_size;
+	m.chunk_size = chunk_size;
+	*((struct memory_config *)buf) = m;
+	for (i = 0; i < RETRY_SEND; ++i) {
+		rv = send(sd, buf, sizeof(struct memory_config), MSG_DONTWAIT);
+		if (rv != -1) {
+			break;
+		} else {
+			rv = errno;
+			fprintf(stderr, "Error during send: %s\n",
+				strerror(rv));
+		}
+	}
+}
+
+void send_host_list(int sd)
+{
+	int rv;
+	int i;
+
 }
 
 /*!
@@ -91,7 +134,6 @@ int main(int argc, char *argv[])
 	struct sockaddr_storage peer_addr;
 	socklen_t peer_addr_len;
 	ssize_t nread;
-	char buf[BUF_SIZE];
 	int clientcount = 0;
 	int i, rv;
 
@@ -229,6 +271,7 @@ int main(int argc, char *argv[])
 			   result->ai_protocol);
 		clientlist[clientcount].addrlen = result->ai_addrlen;
 		clientlist[clientcount].addr = result->ai_addr;
+		fprintf(stderr, "addr: %X\n", result->ai_addr);
 		clientcount++;
 
 		if (connect
@@ -329,4 +372,6 @@ int main(int argc, char *argv[])
 
 	system("read");
 	close(sfd);
+
+	return 0;
 }
