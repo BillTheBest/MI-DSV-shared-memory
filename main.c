@@ -24,7 +24,7 @@
 #define MAX_CLIENTS_NO 10
 #define DEFAULT_MEMORY_SIZE 10
 #define DEFAULT_CHUNK_SIZE 10
-#define RETRY_SEND 3
+#define RETRY_SEND 1
 
 /*| entry of list of clients */
 typedef struct clientl {
@@ -85,7 +85,7 @@ void handle_message(int sd, char *bf, size_t bs)
 		memory_size = m->memory_size;
 		chunk_size = m->chunk_size;
 		buf[0] = 'Y';
-		send(sd, buf, 1, 0);
+		send(sd, buf, 1, MSG_WAITALL);
 		fprintf(stderr, "Set memory to: %i x %i\n", memory_size,
 			chunk_size);
 	} else if (strncmp(bf, "h", 1) == 0) {
@@ -95,7 +95,7 @@ void handle_message(int sd, char *bf, size_t bs)
 		/* write */
 		fprintf(stderr, "Received write\n");
 		buf[0] = 'Y';
-		send(sd, buf, 1, 0);
+		send(sd, buf, 1, MSG_WAITALL);
 	}
 }
 
@@ -131,7 +131,7 @@ void send_memory_config(int sd)
 	m.memory_size = memory_size;
 	m.chunk_size = chunk_size;
 	for (i = 0; i < RETRY_SEND; ++i) {
-		rv = send(sd, &m, sizeof(struct memory_config), 0);
+		rv = send(sd, &m, sizeof(struct memory_config), MSG_WAITALL);
 		if (rv != -1) {
 			break;
 		} else {
@@ -163,6 +163,19 @@ void send_host_list(int sd)
 
 }
 
+int generate_write_op()
+{
+	char chunk[chunk_size];
+	/* TODO randomize index from 0 to memory_size-1 */
+	int index = 1;
+	int i;
+	for (i = 0; i < chunk_size; ++i) {
+		chunk[i] = i + 0x30;	/* TODO randomize data */
+	}
+	strncpy(&shared_memory[index * chunk_size], chunk, chunk_size);
+	return index;
+}
+
 /*!
  * \brief randomly write or read from shared memory
  *
@@ -185,9 +198,22 @@ void handle_send()
 			m.msgtype = 'w';
 			m.timestamp = time(NULL);
 			if (clientcount > 0) {
+				int index = generate_write_op();
+				void *pi;
+				int *pint;
 				for (i = 0; i < clientcount; ++i) {
-					send(clientlist[i].sd, &m,
-					     sizeof(struct write_message),
+					buf[0] = 'w';
+					pint = (int *)&buf[1];
+					*pint = index;
+					pi = (void *)pint;
+					pi = pi + sizeof(index);
+					pi = strncpy(pi,
+						     &shared_memory[chunk_size *
+								    index],
+						     chunk_size);
+					pi = pi + chunk_size;
+					send(clientlist[i].sd, &buf,
+					     pi - (void *)&buf,
 					     MSG_NOSIGNAL | MSG_DONTWAIT);
 					fprintf(stderr,
 						"%i clientcount: %i %f\n", i,
