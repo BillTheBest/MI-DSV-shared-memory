@@ -18,6 +18,7 @@
 #include <netdb.h>
 #include <getopt.h>
 #include <locale.h>
+#include <time.h>
 
 #define BUF_SIZE 5000
 #define MAX_CLIENTS_NO 10
@@ -38,6 +39,11 @@ struct memory_config {
 	uint32_t chunk_size;
 } __attribute__ ((__packed__));
 
+struct write_message {
+	char msgtype;
+	time_t timestamp;
+} __attribute__ ((__packed__));
+
 static int master_flag = 0;
 static char *local_port = NULL;
 static char *target_addr = NULL;
@@ -45,11 +51,19 @@ static char *target_port = NULL;
 static uint32_t memory_size = DEFAULT_MEMORY_SIZE;
 static uint32_t chunk_size = DEFAULT_CHUNK_SIZE;
 static clientl_t clientlist[MAX_CLIENTS_NO];
+static int clientcount = 0;
 static char *shared_memory = NULL;
 static fd_set fdclientset;
-static struct timeval timeout = { 0, 10000 };
+static struct timeval timeout = { 1, 0 };
+
+static unsigned long int send_countdown = 0;
+
+static time_t *timestamps;
 
 static char buf[BUF_SIZE];
+
+/*! sfd - local server socket descriptor */
+int sfd;
 
 /* TODO signal for ending */
 static int is_terminated = 0;
@@ -65,20 +79,47 @@ void handle_message(int sd, char *bf, size_t bs)
 	void *p;
 	struct memory_config *m;
 	fprintf(stderr, "from %i got message len %i: %s\n", sd, bs, bf);
-	if (strncmp(bf, "m", bs) == 0) {
+	if (strncmp(bf, "m", 1) == 0) {
 		/* memory configuration */
 		m = (struct memory_config *)bf;
 		memory_size = m->memory_size;
 		chunk_size = m->chunk_size;
+		buf[0] = 'Y';
+		send(sd, buf, 1, 0);
 		fprintf(stderr, "Set memory to: %i x %i\n", memory_size,
 			chunk_size);
-	} else if (strncmp(bf, "h", bs) == 0) {
+	} else if (strncmp(bf, "h", 1) == 0) {
 		/* host record */
-	} else if (strncmp(bf, "w", bs) == 0) {
+		fprintf(stderr, "Received hostlist\n");
+	} else if (strncmp(bf, "w", 1) == 0) {
 		/* write */
-	} else if (strncmp(bf, "r", bs) == 0) {
-		/* read */
+		fprintf(stderr, "Received write\n");
+		buf[0] = 'Y';
+		send(sd, buf, 1, 0);
 	}
+}
+
+void close_remove_id(int i)
+{
+	close(clientlist[i].sd);
+	clientlist[i].sd = clientlist[clientcount - 1].sd;
+	clientlist[i].addr = clientlist[clientcount - 1].addr;
+	clientlist[i].addrlen = clientlist[clientcount - 1].addrlen;
+	memset((void *)&clientlist[clientcount - 1], 0, sizeof(*clientlist));
+	clientcount--;
+}
+
+void close_remove_sd(int sd)
+{
+	int i;
+
+	for (i = 0; i < clientcount; ++i) {
+		if (clientlist[i].sd == sd) {
+			break;
+		}
+	}
+
+	close_remove_id(i);
 }
 
 void send_memory_config(int sd)
@@ -89,15 +130,28 @@ void send_memory_config(int sd)
 	m.msgtype = 'm';
 	m.memory_size = memory_size;
 	m.chunk_size = chunk_size;
-	*((struct memory_config *)buf) = m;
 	for (i = 0; i < RETRY_SEND; ++i) {
-		rv = send(sd, buf, sizeof(struct memory_config), MSG_DONTWAIT);
+		rv = send(sd, &m, sizeof(struct memory_config), 0);
 		if (rv != -1) {
 			break;
 		} else {
 			rv = errno;
 			fprintf(stderr, "Error during send: %s\n",
 				strerror(rv));
+		}
+		rv = recv(sd, buf, BUF_SIZE, MSG_WAITALL);
+		if (rv > 0) {
+			fprintf(stderr, "Memory configuration send, answ %x\n",
+				buf[0]);
+		} else {
+			if (rv == 0) {
+				fprintf(stderr, "Client shutdown\n");
+			} else {
+				fprintf(stderr,
+					"Error during receive answer\n");
+			}
+
+			close_remove_sd(sd);
 		}
 	}
 }
@@ -116,11 +170,48 @@ void send_host_list(int sd)
  */
 void handle_send()
 {
-	fprintf(stderr, "send\n");
-	if (random() >= 0.5) {
-		/* write */
+	int i;
+	//fprintf(stderr, "send\n");
+//      if (((double) random()/RAND_MAX) >= 0.5) {
+//              /* write */
+//      } else {
+//              /* read */
+//      }
+	struct write_message m;
+	long int r = random() % 100000000;
+	double rate = (double)r / 100000000;
+	if (!send_countdown) {
+		if (rate >= 0.8) {
+			m.msgtype = 'w';
+			m.timestamp = time(NULL);
+			if (clientcount > 0) {
+				for (i = 0; i < clientcount; ++i) {
+					send(clientlist[i].sd, &m,
+					     sizeof(struct write_message),
+					     MSG_NOSIGNAL | MSG_DONTWAIT);
+					fprintf(stderr,
+						"%i clientcount: %i %f\n", i,
+						clientcount, rate);
+				}
+				send_countdown = random();
+			}
+		}
 	} else {
-		/* read */
+		send_countdown--;
+	}
+}
+
+void accept_new_client()
+{
+	int rv = accept(sfd, clientlist[clientcount].addr,
+			&clientlist[clientcount].addrlen);
+	if (rv == -1) {
+		fprintf(stderr, "Error - accept() failed\n");
+	} else {
+		fprintf(stderr, "Accepted client %i\n", rv);
+		clientlist[clientcount].sd = rv;
+		send_memory_config(clientlist[clientcount].sd);
+		clientcount++;
 	}
 }
 
@@ -128,13 +219,10 @@ int main(int argc, char *argv[])
 {
 	struct addrinfo hints;
 	struct addrinfo *result, *rp;
-	/*! sfd - local server socket descriptor */
-	int sfd;
 	int s;
 	struct sockaddr_storage peer_addr;
 	socklen_t peer_addr_len;
 	ssize_t nread;
-	int clientcount = 0;
 	int i, rv;
 
 	/* getopt options */
@@ -255,6 +343,7 @@ int main(int argc, char *argv[])
 	/* if I am a master - initial node, enter mainloop
 	 * otherwise connect to node structure */
 
+	srandom(time(NULL));
 	if (master_flag == 0) {
 		/* connect to structure of node (I am just a client) */
 		do {
@@ -286,12 +375,16 @@ int main(int argc, char *argv[])
 		fprintf(stderr, "master sd: %d\n", clientlist[0].sd);
 		freeaddrinfo(result);
 
-		/* TODO receive memory configuration and the list of nodes */
+		/* TODO receive memory configuration
+		   and the list of nodes */
 
 	} else {
 		/* allocate given chunk of memory */
 		shared_memory =
 		    calloc(memory_size, chunk_size * sizeof(*shared_memory));
+		timestamps = calloc(memory_size, sizeof(time_t));
+
+		accept_new_client();
 	}
 
 	while (is_terminated == 0) {
@@ -310,14 +403,7 @@ int main(int argc, char *argv[])
 		}
 
 		if (FD_ISSET(sfd, &fdclientset)) {
-			rv = accept(sfd, clientlist[clientcount].addr,
-				    &clientlist[clientcount].addrlen);
-			if (rv == -1) {
-				fprintf(stderr, "Error - accept() failed\n");
-			}
-			fprintf(stderr, "Accepted client %i\n", rv);
-			clientlist[clientcount].sd = rv;
-			clientcount++;
+			accept_new_client();
 		}
 
 		for (i = (clientcount - 1); i >= 0; --i) {
@@ -330,48 +416,34 @@ int main(int argc, char *argv[])
 				case 0:	//shutdown
 					fprintf(stderr, "Got goodbye from %i\n",
 						clientlist[i].sd);
-					close(clientlist[i].sd);
-					clientlist[i].sd =
-					    clientlist[clientcount - 1].sd;
-					clientlist[i].addr =
-					    clientlist[clientcount - 1].addr;
-					clientlist[i].addrlen =
-					    clientlist[clientcount - 1].addrlen;
-					memset((void *)
-					       &clientlist[clientcount - 1], 0,
-					       sizeof(*clientlist));
-					clientcount--;
+					close_remove_id(i);
 					break;
 				case -1:
+
+					rv = errno;
 					fprintf(stderr,
-						"Error - recv() client %d\n",
-						clientlist[i].sd);
-					close(clientlist[i].sd);
-					clientlist[i].sd =
-					    clientlist[clientcount - 1].sd;
-					clientlist[i].addr =
-					    clientlist[clientcount - 1].addr;
-					clientlist[i].addrlen =
-					    clientlist[clientcount - 1].addrlen;
-					memset((void *)
-					       &clientlist[clientcount - 1], 0,
-					       sizeof(*clientlist));
-					clientcount--;
+						"Error - recv() client %d, %s\n",
+						clientlist[i].sd, strerror(rv));
+					close_remove_id(i);
 					break;
 				default:
-					handle_message(i, buf, rv);
+					handle_message(clientlist[i].sd, buf,
+						       rv);
 				}
 			}
 		}
 
-		handle_send();
+		if (clientcount > 0) {
+			handle_send();
+		}
 
-		sleep(100);
+		sleep(0.5);
 	}
 	free(shared_memory);
+	free(timestamps);
+	close(sfd);
 
 	system("read");
-	close(sfd);
 
 	return 0;
 }
