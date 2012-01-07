@@ -54,19 +54,33 @@ static clientl_t clientlist[MAX_CLIENTS_NO];
 static int clientcount = 0;
 static char *shared_memory = NULL;
 static fd_set fdclientset;
-static struct timeval timeout = { 1, 0 };
-
-static unsigned long int send_countdown = 0;
+static struct timeval timeout = { 0, 0 };
 
 static time_t *timestamps;
 
 static char buf[BUF_SIZE];
 
 /*! sfd - local server socket descriptor */
-int sfd;
+int sfd = 0;
+
+/*! msd - socket descriptor of client for communication with master */
+int msd = 0;
 
 /* TODO signal for ending */
 static int is_terminated = 0;
+
+void handle_signal(int sig)
+{
+	is_terminated = 1;
+	fprintf(stderr, "set is_terminated\n");
+}
+
+void allocate_shared_mem()
+{
+	shared_memory =
+	    calloc(memory_size, chunk_size * sizeof(*shared_memory));
+	timestamps = calloc(memory_size, sizeof(time_t));
+}
 
 /*|
  * \brief Handle incomming message from buffer
@@ -84,8 +98,7 @@ void handle_message(int sd, char *bf, size_t bs)
 		m = (struct memory_config *)bf;
 		memory_size = m->memory_size;
 		chunk_size = m->chunk_size;
-		buf[0] = 'Y';
-		send(sd, buf, 1, MSG_WAITALL);
+		allocate_shared_mem();
 		fprintf(stderr, "Set memory to: %i x %i\n", memory_size,
 			chunk_size);
 	} else if (strncmp(bf, "h", 1) == 0) {
@@ -94,14 +107,12 @@ void handle_message(int sd, char *bf, size_t bs)
 	} else if (strncmp(bf, "w", 1) == 0) {
 		/* write */
 		fprintf(stderr, "Received write\n");
-		buf[0] = 'Y';
-		send(sd, buf, 1, MSG_WAITALL);
 	}
 }
 
 void close_remove_id(int i)
 {
-	close(clientlist[i].sd);
+	shutdown(clientlist[i].sd, SHUT_RDWR);
 	clientlist[i].sd = clientlist[clientcount - 1].sd;
 	clientlist[i].addr = clientlist[clientcount - 1].addr;
 	clientlist[i].addrlen = clientlist[clientcount - 1].addrlen;
@@ -124,35 +135,19 @@ void close_remove_sd(int sd)
 
 void send_memory_config(int sd)
 {
+	/* this function is called only when somebody connects to me */
 	struct memory_config m;
 	int rv;
 	int i;
 	m.msgtype = 'm';
 	m.memory_size = memory_size;
 	m.chunk_size = chunk_size;
-	for (i = 0; i < RETRY_SEND; ++i) {
-		rv = send(sd, &m, sizeof(struct memory_config), MSG_WAITALL);
-		if (rv != -1) {
-			break;
-		} else {
-			rv = errno;
-			fprintf(stderr, "Error during send: %s\n",
-				strerror(rv));
-		}
-		rv = recv(sd, buf, BUF_SIZE, MSG_WAITALL);
-		if (rv > 0) {
-			fprintf(stderr, "Memory configuration send, answ %x\n",
-				buf[0]);
-		} else {
-			if (rv == 0) {
-				fprintf(stderr, "Client shutdown\n");
-			} else {
-				fprintf(stderr,
-					"Error during receive answer\n");
-			}
-
-			close_remove_sd(sd);
-		}
+	rv = send(sd, &m, sizeof(struct memory_config), MSG_NOSIGNAL);
+	if (rv == -1) {
+		rv = errno;
+		fprintf(stderr, "Error during send: %s\n", strerror(rv));
+		close_remove_sd(sd);
+		return;
 	}
 }
 
@@ -183,6 +178,10 @@ int generate_write_op()
  */
 void handle_send()
 {
+	if (shared_memory == NULL) {
+		return;		/* memory is still not configured */
+	}
+
 	int i;
 	//fprintf(stderr, "send\n");
 //      if (((double) random()/RAND_MAX) >= 0.5) {
@@ -193,37 +192,32 @@ void handle_send()
 	struct write_message m;
 	long int r = random() % 100000000;
 	double rate = (double)r / 100000000;
-	if (!send_countdown) {
-		if (rate >= 0.8) {
-			m.msgtype = 'w';
-			m.timestamp = time(NULL);
-			if (clientcount > 0) {
-				int index = generate_write_op();
-				void *pi;
-				int *pint;
-				for (i = 0; i < clientcount; ++i) {
-					buf[0] = 'w';
-					pint = (int *)&buf[1];
-					*pint = index;
-					pi = (void *)pint;
-					pi = pi + sizeof(index);
-					pi = strncpy(pi,
-						     &shared_memory[chunk_size *
-								    index],
-						     chunk_size);
-					pi = pi + chunk_size;
-					send(clientlist[i].sd, &buf,
-					     pi - (void *)&buf,
-					     MSG_NOSIGNAL | MSG_DONTWAIT);
-					fprintf(stderr,
-						"%i clientcount: %i %f\n", i,
-						clientcount, rate);
-				}
-				send_countdown = random();
+	if (rate < 0.2) {
+		int index = generate_write_op();
+		void *pi;
+		int *pint;
+		m.msgtype = 'w';
+		m.timestamp = time(NULL);
+		buf[0] = 'w';
+		pint = (int *)&buf[1];
+		*pint = index;
+		pi = (void *)pint;
+		pi = pi + sizeof(index);
+		pi = strncpy(pi,
+			     &shared_memory[chunk_size * index], chunk_size);
+		pi = pi + chunk_size;
+		if (clientcount > 0) {
+			for (i = 0; i < clientcount; ++i) {
+				send(clientlist[i].sd, buf,
+				     pi - (void *)&buf, MSG_NOSIGNAL);
 			}
 		}
+		if (master_flag == 0) {
+			send(msd, buf, pi - (void *)&buf, MSG_NOSIGNAL);
+		}
+		fprintf(stderr, "sent write operation\n");
 	} else {
-		send_countdown--;
+		fprintf(stderr, " ");
 	}
 }
 
@@ -381,17 +375,10 @@ int main(int argc, char *argv[])
 			close(sfd);
 			exit(EXIT_FAILURE);
 		}
-		clientlist[clientcount].sd =
-		    socket(result->ai_family, result->ai_socktype,
-			   result->ai_protocol);
-		clientlist[clientcount].addrlen = result->ai_addrlen;
-		clientlist[clientcount].addr = result->ai_addr;
-		fprintf(stderr, "addr: %X\n", result->ai_addr);
-		clientcount++;
+		msd = socket(result->ai_family, result->ai_socktype,
+			     result->ai_protocol);
 
-		if (connect
-		    (clientlist[0].sd, result->ai_addr, result->ai_addrlen)
-		    == -1) {
+		if (connect(msd, result->ai_addr, result->ai_addrlen) == -1) {
 			freeaddrinfo(result);
 			fprintf(stderr, "Could not connect\n");
 			close(clientlist[0].sd);
@@ -406,30 +393,64 @@ int main(int argc, char *argv[])
 
 	} else {
 		/* allocate given chunk of memory */
-		shared_memory =
-		    calloc(memory_size, chunk_size * sizeof(*shared_memory));
-		timestamps = calloc(memory_size, sizeof(time_t));
-
+		allocate_shared_mem();
 		accept_new_client();
 	}
 
+	fprintf(stderr, "before mainloop:\n"
+		"sfd: %i\n"
+		"master_flag: %i\n" "msd: %i\n", sfd, master_flag, msd);
+
+	signal(SIGINT, handle_signal);
 	while (is_terminated == 0) {
 		/* infinite main loop */
 		FD_ZERO(&fdclientset);
-		FD_SET(sfd, &fdclientset);
-		int maxfd = sfd + 1;
+		if (sfd > 0) {
+			FD_SET(sfd, &fdclientset);
+		}
+		if (master_flag == 0 && msd > 0) {
+			FD_SET(msd, &fdclientset);
+		}
+
+		int maxfd = (sfd > msd ? sfd : msd) + 1;
+
 		for (i = (clientcount - 1); i >= 0; --i) {
-			if (clientlist[i].sd > maxfd) {
-				maxfd = clientlist[i].sd + 1;
+			if (clientlist[i].sd > 0) {
+				if (clientlist[i].sd > maxfd) {
+					maxfd = clientlist[i].sd + 1;
+				}
+				FD_SET(clientlist[i].sd, &fdclientset);
 			}
-			FD_SET(clientlist[i].sd, &fdclientset);
 		}
 		if (select(maxfd, &fdclientset, NULL, NULL, &timeout) == -1) {
-			fprintf(stderr, "Error - select() failed\n");
+
+			rv == errno;
+			fprintf(stderr,
+				"Error - select() failed maxfd %i: %s\n", maxfd,
+				strerror(rv));
+
 		}
 
 		if (FD_ISSET(sfd, &fdclientset)) {
 			accept_new_client();
+		}
+
+		if (master_flag == 0) {
+			if (FD_ISSET(msd, &fdclientset)) {
+				rv = recv(msd, buf, BUF_SIZE - 1, 0);
+				buf[rv] = 0;
+				switch (rv) {
+				case 0:
+				case -1:
+					fprintf(stderr,
+						"Unexpected end of master\n");
+					shutdown(msd, SHUT_RDWR);
+					msd = 0;
+					break;
+				default:
+					handle_message(msd, buf, rv);
+				}
+			}
 		}
 
 		for (i = (clientcount - 1); i >= 0; --i) {
@@ -459,17 +480,20 @@ int main(int argc, char *argv[])
 			}
 		}
 
-		if (clientcount > 0) {
+		if ((master_flag == 0 && msd > 0) || clientcount > 0) {
 			handle_send();
 		}
 
-		sleep(0.5);
+		sleep(1);
 	}
 	free(shared_memory);
 	free(timestamps);
-	close(sfd);
-
-	system("read");
+	for (i = 0; i < clientcount; ++i) {
+		shutdown(clientlist[i].sd, SHUT_RDWR);
+	}
+	shutdown(sfd, SHUT_RDWR);
+	shutdown(msd, SHUT_RDWR);
+	puts("Died...");
 
 	return 0;
 }
