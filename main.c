@@ -60,8 +60,17 @@ static clientl_t clientlist[MAX_CLIENTS_NO];
 static clientl_t targetlist[MAX_CLIENTS_NO];
 /*! list of node addressses, 0 is me */
 static struct address_book_s address_book[MAX_CLIENTS_NO + 1];
+/*! pair (file descriptor, index in address table) */
+static struct fdidx {
+	int fd;
+	int id;
+} tfdaddr[MAX_CLIENTS_NO];
+
+static int addbookidx = 0;
+static int tfdaddridx = 0;
 static int clientcount = 0;
 static int targetcount = 0;
+
 static unsigned char *shared_memory = NULL;
 static fd_set fdclientset;
 static struct timeval timeout = { 0, 0 };
@@ -92,7 +101,20 @@ void allocate_shared_mem()
 	timestamps = calloc(memory_size, sizeof(time_t));
 }
 
-void connect_2_master(char *hostname, char *target_port)
+void insert_fd_to_addrbook(int fd, char *target_addr, char *target_port)
+{
+	fprintf(stderr, "Inserting into address book (%i)\n", addbookidx);
+
+	strncpy(address_book[addbookidx].hostname, target_addr,
+		sizeof(address_book[0].hostname));
+	sscanf(target_port, "%i", &address_book[addbookidx].port);
+	tfdaddr[tfdaddridx].fd = fd;
+	tfdaddr[tfdaddridx].id = addbookidx;
+	addbookidx++;
+	tfdaddridx++;
+}
+
+int connect_2_master(char *hostname, char *target_port)
 {
 	int rv;
 
@@ -119,6 +141,7 @@ void connect_2_master(char *hostname, char *target_port)
 	fprintf(stderr, "master sd: %d\n", targetlist[targetcount].sd);
 	freeaddrinfo(result);
 	targetcount++;
+	return targetlist[targetcount - 1].sd;
 }
 
 void hostlist_insert(struct address_book_s it)
@@ -133,15 +156,12 @@ void hostlist_insert(struct address_book_s it)
 			}
 		}
 	}
-	strncpy(address_book[targetcount + 1].hostname, it.hostname,
-		sizeof(address_book[0].hostname));
-	address_book[targetcount + 1].port = it.port;
-
 	char sport[6];
 	i = snprintf(sport, 6, "%i", it.port);
 	sport[5] = 0;
 	printf("%i %s", it.port, sport);
-	connect_2_master(it.hostname, sport);
+	int fd = connect_2_master(it.hostname, sport);
+	insert_fd_to_addrbook(fd, it.hostname, sport);
 }
 
 /*|
@@ -213,6 +233,7 @@ int find_index_sd(clientl_t * list, int lcount, int sd)
 
 void close_remove_id(clientl_t * list, int *lcount, int i)
 {
+	fprintf(stderr, "Removing from address book (%i)\n", addbookidx);
 	shutdown(list[i].sd, SHUT_RDWR);
 	list[i].sd = list[*lcount - 1].sd;
 	list[i].addr = list[*lcount - 1].addr;
@@ -249,7 +270,7 @@ void send_host_list(int sd)
 {
 	int rv;
 	int i;
-	i = sizeof(struct address_book_s) * (clientcount + 1);
+	i = sizeof(struct address_book_s) * addbookidx;
 	buf[0] = 'h';
 	memcpy(&buf[1], (void *)address_book, i);
 	send(sd, buf, i + 1, MSG_NOSIGNAL | MSG_WAITALL);
@@ -342,6 +363,32 @@ void accept_new_client()
 		sleep(1);
 		send_host_list(clientlist[clientcount].sd);
 		clientcount++;
+	}
+}
+
+void remove_fd_from_addrbook(int fd)
+{
+	int i, b;
+	for (i = 0; i < tfdaddridx; ++i) {
+		if (tfdaddr[i].fd == fd) {
+			memcpy(address_book[tfdaddr[i].id].hostname,
+			       address_book[addbookidx - 1].hostname,
+			       sizeof(address_book[0].hostname));
+			address_book[tfdaddr[i].id].port =
+			    address_book[addbookidx - 1].port;
+			tfdaddr[i].fd = tfdaddr[tfdaddridx - 1].fd;
+			tfdaddr[i].id = tfdaddr[tfdaddridx - 1].id;
+			tfdaddridx--;
+
+			for (b = 0; i < tfdaddridx; ++i) {
+				if (tfdaddr[b].id == (addbookidx - 1)) {
+					tfdaddr[b].id = i;
+				}
+			}
+
+			addbookidx--;
+			return;
+		}
 	}
 }
 
@@ -445,14 +492,16 @@ int main(int argc, char *argv[])
 
 		if (bind(sfd, rp->ai_addr, rp->ai_addrlen) == 0) {
 
-			gethostname(address_book[0].hostname,
+			gethostname(address_book[addbookidx].hostname,
 				    sizeof(address_book[0].hostname));
 			short *pport = (short *)rp->ai_addr->sa_data;
-			address_book[0].port =
-			    ntohs(((struct sockaddr_in *)rp->ai_addr)->
-				  sin_port);
+			address_book[addbookidx].port =
+			    ntohs(((struct sockaddr_in *)rp->
+				   ai_addr)->sin_port);
 			fprintf(stderr, "I am: %s:%i \n",
-				address_book[0].hostname, address_book[0].port);
+				address_book[addbookidx].hostname,
+				address_book[addbookidx].port);
+			addbookidx++;
 			break;	/* Success */
 		}
 
@@ -479,10 +528,11 @@ int main(int argc, char *argv[])
 	srandom(time(NULL));
 	if (master_flag == 0) {
 		/* connect to structure of node (I am just a client) */
-		strncpy(address_book[targetcount + 1].hostname, target_addr,
+		strncpy(address_book[addbookidx].hostname, target_addr,
 			sizeof(address_book[0].hostname));
-		sscanf(target_port, "%i", &address_book[targetcount + 1].port);
-		connect_2_master(target_addr, target_port);
+		sscanf(target_port, "%i", &address_book[addbookidx++].port);
+		int fd = connect_2_master(target_addr, target_port);
+		insert_fd_to_addrbook(fd, target_addr, target_port);
 		/* send own address and port to structure */
 		send_host_list(targetlist[0].sd);	/* send to target */
 	} else {
@@ -599,9 +649,14 @@ int main(int argc, char *argv[])
 								targetlist
 								[i].sd);
 						}
+						int disc_node =
+						    targetlist[i].sd;
 						close_remove_id(targetlist,
 								&targetcount,
 								i);
+						remove_fd_from_addrbook
+						    (disc_node);
+
 						break;
 					default:
 						handle_message(targetlist[i].sd,
@@ -612,7 +667,7 @@ int main(int argc, char *argv[])
 		}
 
 		if ((targetcount > 0) || (clientcount > 0)) {
-			//handle_send();
+			handle_send();
 		}
 
 		sleep(1);
