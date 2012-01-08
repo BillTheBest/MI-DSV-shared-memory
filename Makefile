@@ -1,5 +1,4 @@
 
-.PHONY: all
 
 all: dshm
 

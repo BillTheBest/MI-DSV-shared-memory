@@ -62,7 +62,7 @@ static clientl_t targetlist[MAX_CLIENTS_NO];
 static struct address_book_s address_book[MAX_CLIENTS_NO + 1];
 static int clientcount = 0;
 static int targetcount = 0;
-static char *shared_memory = NULL;
+static unsigned char *shared_memory = NULL;
 static fd_set fdclientset;
 static struct timeval timeout = { 0, 0 };
 
@@ -102,8 +102,7 @@ void connect_2_master(char *hostname, char *target_port)
 	} while (rv == EAI_AGAIN);
 	if (rv != 0) {
 		fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rv));
-		close(sfd);
-		exit(EXIT_FAILURE);
+		return;
 	}
 	targetlist[targetcount].sd =
 	    socket(result->ai_family, result->ai_socktype, result->ai_protocol);
@@ -125,7 +124,7 @@ void connect_2_master(char *hostname, char *target_port)
 void hostlist_insert(struct address_book_s it)
 {
 	int i;
-	for (i = 0; i < (clientcount + 1); ++i) {
+	for (i = 0; i < (targetcount + 1); ++i) {
 		if (strncmp
 		    (it.hostname, address_book[i].hostname,
 		     sizeof(address_book[i].hostname)) == 0) {
@@ -134,8 +133,14 @@ void hostlist_insert(struct address_book_s it)
 			}
 		}
 	}
-	char sport[10];
-	sport[sscanf(sport, "%i", it.port)] = 0;
+	strncpy(address_book[targetcount + 1].hostname, it.hostname,
+		sizeof(address_book[0].hostname));
+	address_book[targetcount + 1].port = it.port;
+
+	char sport[6];
+	i = snprintf(sport, 6, "%i", it.port);
+	sport[5] = 0;
+	printf("%i %s", it.port, sport);
 	connect_2_master(it.hostname, sport);
 }
 
@@ -185,6 +190,13 @@ void handle_message(int sd, char *bf, size_t bs)
 	} else if (strncmp(bf, "w", 1) == 0) {
 		/* write */
 		fprintf(stderr, "Received write\n");
+		int index = *((int *)&buf[1]);
+		for (i = 0; i < chunk_size; ++i) {
+			fprintf(stderr, "%02X",
+				shared_memory[(chunk_size * index) + i]);
+		}
+		void *p = &buf[1 + sizeof(int)];
+		memcpy(&shared_memory[chunk_size * index], p, chunk_size);
 	}
 }
 
@@ -239,21 +251,24 @@ void send_host_list(int sd)
 	int i;
 	i = sizeof(struct address_book_s) * (clientcount + 1);
 	buf[0] = 'h';
-	strncpy(&buf[1], (void *)address_book, i);
+	memcpy(&buf[1], (void *)address_book, i);
 	send(sd, buf, i + 1, MSG_NOSIGNAL | MSG_WAITALL);
 	fprintf(stderr, "Sent hostlist\n");
 }
 
 int generate_write_op()
 {
-	char chunk[chunk_size];
-	/* TODO randomize index from 0 to memory_size-1 */
-	int index = 1;
+	unsigned char chunk[chunk_size];
+	int index = (int)((random() / RAND_MAX) * memory_size);
 	int i;
+	fprintf(stderr, "new chunk:\n");
 	for (i = 0; i < chunk_size; ++i) {
-		chunk[i] = i + 0x30;	/* TODO randomize data */
+		chunk[i] = (unsigned char)(random() & 0xFF);
+		fprintf(stderr, "%02X", chunk[i]);
 	}
-	strncpy(&shared_memory[index * chunk_size], chunk, chunk_size);
+	fprintf(stderr, "\n");
+	memcpy(&shared_memory[index * chunk_size], chunk,
+	       sizeof(chunk[0]) * (chunk_size - 1));
 	return index;
 }
 
@@ -277,8 +292,11 @@ void handle_send()
 //      }
 	struct write_message m;
 	long int r = random() % 100000000;
-	double rate = (double)r / 100000000;
-	if (rate < 0.2) {
+	double rate = (double)random() / RAND_MAX;
+
+	if (rate < 0.3) {
+		fprintf(stderr, "%f, index/size %i/%i\n", rate,
+			(int)(rate * memory_size), memory_size);
 		int index = generate_write_op();
 		void *pi;
 		int *pint;
@@ -289,9 +307,9 @@ void handle_send()
 		*pint = index;
 		pi = (void *)pint;
 		pi = pi + sizeof(index);
-		pi = strncpy(pi,
-			     &shared_memory[chunk_size * index], chunk_size);
-		pi = pi + chunk_size;
+		pi = memcpy(pi, &shared_memory[chunk_size * index], chunk_size);
+		pi = pi + chunk_size + 1;
+
 		if (clientcount > 0) {
 			for (i = 0; i < clientcount; ++i) {
 				send(clientlist[i].sd, buf,
@@ -431,8 +449,8 @@ int main(int argc, char *argv[])
 				    sizeof(address_book[0].hostname));
 			short *pport = (short *)rp->ai_addr->sa_data;
 			address_book[0].port =
-			    ntohs(((struct sockaddr_in *)rp->
-				   ai_addr)->sin_port);
+			    ntohs(((struct sockaddr_in *)rp->ai_addr)->
+				  sin_port);
 			fprintf(stderr, "I am: %s:%i \n",
 				address_book[0].hostname, address_book[0].port);
 			break;	/* Success */
@@ -461,7 +479,12 @@ int main(int argc, char *argv[])
 	srandom(time(NULL));
 	if (master_flag == 0) {
 		/* connect to structure of node (I am just a client) */
+		strncpy(address_book[targetcount + 1].hostname, target_addr,
+			sizeof(address_book[0].hostname));
+		sscanf(target_port, "%i", &address_book[targetcount + 1].port);
 		connect_2_master(target_addr, target_port);
+		/* send own address and port to structure */
+		send_host_list(targetlist[0].sd);	/* send to target */
 	} else {
 		/* allocate given chunk of memory */
 		allocate_shared_mem();
@@ -589,7 +612,7 @@ int main(int argc, char *argv[])
 		}
 
 		if ((targetcount > 0) || (clientcount > 0)) {
-			handle_send();
+			//handle_send();
 		}
 
 		sleep(1);
