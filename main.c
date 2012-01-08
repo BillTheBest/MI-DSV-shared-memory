@@ -77,7 +77,11 @@ static struct timeval timeout = { 0, 0 };
 
 static time_t *timestamps;
 
-#define BUF_SIZE ((MAX_CLIENTS_NO+1) * sizeof(struct address_book_s) + 1)
+#define ADDRBOOK_SIZE ((MAX_CLIENTS_NO+1) * sizeof(struct address_book_s) + 1)
+
+#define DEF_BUF_SIZE 5000
+#define BUF_SIZE (ADDRBOOK_SIZE>DEF_BUF_SIZE?ADDRBOOK_SIZE:DEF_BUF_SIZE)
+
 static char buf[BUF_SIZE];
 
 /*! sfd - local server socket descriptor */
@@ -164,6 +168,25 @@ void hostlist_insert(struct address_book_s it)
 	insert_fd_to_addrbook(fd, it.hostname, sport);
 }
 
+void print_shared_memory()
+{
+        int m, c;
+        if (shared_memory != NULL) {
+                fprintf(stderr, "My memory:\n\t");
+                for (m=0; m<memory_size; ++m) {
+                        for (c=0; c<chunk_size; ++c) {
+                                fprintf(stderr, "%02X", shared_memory[m*c + c]);
+                        }
+                        if ((m%5) == 4) {
+                                fprintf(stderr, "\n\t");
+                        } else {
+                                fprintf(stderr, " ");
+                        }
+                }
+                fprintf(stderr, "\n");
+        }
+}
+
 /*|
  * \brief Handle incomming message from buffer
  * \param[in] sd - socket descriptor of client
@@ -183,8 +206,11 @@ void handle_message(int sd, char *bf, size_t bs)
 			memory_size = m->memory_size;
 			chunk_size = m->chunk_size;
 			allocate_shared_mem();
+                        int msize = memory_size * chunk_size * sizeof(*shared_memory);
+                        memcpy(shared_memory, &bf[sizeof(m)], msize);
 			fprintf(stderr, "Set memory to: %i x %i\n", memory_size,
 				chunk_size);
+                        print_shared_memory();
 		} else {
 			if (memory_size != m->memory_size) {
 				fprintf(stderr,
@@ -211,10 +237,12 @@ void handle_message(int sd, char *bf, size_t bs)
 		/* write */
 		fprintf(stderr, "Received write\n");
 		int index = *((int *)&buf[1]);
+                fprintf(stderr, "%i\t", index);
 		for (i = 0; i < chunk_size; ++i) {
 			fprintf(stderr, "%02X",
 				shared_memory[(chunk_size * index) + i]);
 		}
+                fprintf(stderr, "\n");
 		void *p = &buf[1 + sizeof(int)];
 		memcpy(&shared_memory[chunk_size * index], p, chunk_size);
 	}
@@ -256,8 +284,18 @@ void send_memory_config(int sd)
 	m.msgtype = 'm';
 	m.memory_size = memory_size;
 	m.chunk_size = chunk_size;
-	rv = send(sd, &m, sizeof(struct memory_config),
-		  MSG_NOSIGNAL | MSG_WAITALL);
+        memcpy(buf, &m, sizeof(m));
+        int shmsize = memory_size*chunk_size*sizeof(*shared_memory);
+
+        if ((shmsize + sizeof(m)) > BUF_SIZE) {
+                fprintf(stderr, "Epic fail - buffer is not big enought "
+                                "to store memory config and data\n"
+                                "Change BUF_SIZE or memory configuration\n");
+                exit(2);
+        }
+
+        memcpy(&buf[sizeof(m)], shared_memory, shmsize);
+	rv = send(sd, buf, sizeof(m) + shmsize, MSG_NOSIGNAL | MSG_WAITALL);
 	if (rv == -1) {
 		rv = errno;
 		fprintf(stderr, "Error during send: %s\n", strerror(rv));
@@ -280,9 +318,9 @@ void send_host_list(int sd)
 int generate_write_op()
 {
 	unsigned char chunk[chunk_size];
-	int index = (int)((random() / RAND_MAX) * memory_size);
+	int index = (int)((double) ((double)random() / RAND_MAX) * memory_size);
 	int i;
-	fprintf(stderr, "new chunk:\n");
+	fprintf(stderr, "new chunk %i:\n", index);
 	for (i = 0; i < chunk_size; ++i) {
 		chunk[i] = (unsigned char)(random() & 0xFF);
 		fprintf(stderr, "%02X", chunk[i]);
@@ -330,13 +368,9 @@ void handle_send()
 		pi = pi + sizeof(index);
 		pi = memcpy(pi, &shared_memory[chunk_size * index], chunk_size);
 		pi = pi + chunk_size + 1;
+                
 
-		if (clientcount > 0) {
-			for (i = 0; i < clientcount; ++i) {
-				send(clientlist[i].sd, buf,
-				     pi - (void *)&buf, MSG_NOSIGNAL);
-			}
-		}
+                /* send only to targets (do not duplicate) */
 		if (targetcount > 0) {
 			for (i = 0; i < targetcount; ++i) {
 				send(targetlist[i].sd, buf,
@@ -545,6 +579,8 @@ int main(int argc, char *argv[])
 	fprintf(stderr, "before mainloop:\n"
 		"\tsfd: %i\n" "\tmaster_flag: %i\n", sfd, master_flag);
 
+        print_shared_memory();
+
 	signal(SIGINT, handle_signal);
 
 	while (is_terminated == 0) {
@@ -672,6 +708,7 @@ int main(int argc, char *argv[])
 
 		sleep(1);
 	}
+        print_shared_memory();
 	free(shared_memory);
 	free(timestamps);
 	for (i = 0; i < clientcount; ++i) {
