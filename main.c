@@ -120,7 +120,7 @@ void insert_fd_to_addrbook(int fd, char *target_addr, char *target_port)
 
 int connect_2_master(char *hostname, char *target_port)
 {
-	int rv;
+	int rv, i;
 
 	fprintf(stderr, "Connecting to node %s:%s\n", hostname, target_port);
 	do {
@@ -138,9 +138,14 @@ int connect_2_master(char *hostname, char *target_port)
 	     result->ai_addrlen) == -1) {
 		freeaddrinfo(result);
 		fprintf(stderr, "Could not connect\n");
-		close(targetlist[targetcount].sd);
-		close(sfd);
-		exit(EXIT_FAILURE);
+                fprintf(stderr, "addressbook (%i):\n", addbookidx);
+                for (i=0; i<addbookidx; ++i) {
+                        fprintf(stderr, "%i: %s:%i\n", i, address_book[i].hostname, address_book[i].port);
+                }
+
+		//close(targetlist[targetcount].sd);
+		//close(sfd);
+		//exit(EXIT_FAILURE);
 	}
 	fprintf(stderr, "master sd: %d\n", targetlist[targetcount].sd);
 	freeaddrinfo(result);
@@ -385,7 +390,12 @@ void handle_send()
 			}
 		}
 
-		fprintf(stderr, "sent write operation\n");
+		fprintf(stderr, "sent %i:\t", index);
+		for (i = 0; i < chunk_size; ++i) {
+			fprintf(stderr, "%02X",
+				shared_memory[(chunk_size * index) + i]);
+		}
+		fprintf(stderr, "\n");
 	} else {
 		fprintf(stderr, " ");
 	}
@@ -683,20 +693,19 @@ int main(int argc, char *argv[])
 							rv = errno;
 							fprintf(stderr,
 								"Error - recv() target %d, %s\n",
-								targetlist
-								[i].sd,
+								targetlist[i].sd,
 								strerror(rv));
+						} else {
+							fprintf(stderr,
+								"Got goodbye from target %i\n",
+								targetlist
+								[i].sd);
 							fprintf(stderr,
 								"Clientlist %i, Targetlist %i, address_book %i, tfdaddridx %i\n",
 								clientcount,
 								targetcount,
 								addbookidx,
 								tfdaddridx);
-						} else {
-							fprintf(stderr,
-								"Got goodbye from target %i\n",
-								targetlist
-								[i].sd);
 						}
 						int disc_node =
 						    targetlist[i].sd;
