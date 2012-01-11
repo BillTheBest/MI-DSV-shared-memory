@@ -196,6 +196,15 @@ void print_shared_memory()
 				fprintf(stderr, " ");
 			}
 		}
+		fprintf(stderr, "\n\t");
+		for (m = 0; m < memory_size; ++m) {
+			fprintf(stderr, "%i", timestamps[m]);
+			if ((m % 5) == 4) {
+				fprintf(stderr, "\n\t");
+			} else {
+				fprintf(stderr, " ");
+			}
+		}
 		fprintf(stderr, "\n");
 	}
 }
@@ -221,7 +230,9 @@ void handle_message(int sd, char *bf, size_t bs)
 			allocate_shared_mem();
 			int msize =
 			    memory_size * chunk_size * sizeof(*shared_memory);
+			int tsize = memory_size * sizeof(*timestamps);
 			memcpy(shared_memory, &bf[sizeof(*m)], msize);
+			memcpy(timestamps, &bf[sizeof(*m) + msize], tsize);
 			fprintf(stderr, "Set memory to: %i x %i\n", memory_size,
 				chunk_size);
 			print_shared_memory();
@@ -252,12 +263,12 @@ void handle_message(int sd, char *bf, size_t bs)
 		fprintf(stderr, "Received write\n");
 		struct write_message *m = (struct write_message *)buf;
 		int index = m->index;
-		time_t timestamp = m->timestamp;
 
 		if (timestamps[index] > m->timestamp) {
 			fprintf(stderr, "I have better (newer) value!!!\n");
 			return;
 		}
+		timestamps[index] = m->timestamp;
 
 		p = buf + sizeof(*m);
 
@@ -309,9 +320,10 @@ void send_memory_config(int sd)
 	m.memory_size = memory_size;
 	m.chunk_size = chunk_size;
 	memcpy(buf, &m, sizeof(m));
+	int tstsize = memory_size * sizeof(*timestamps);
 	int shmsize = memory_size * chunk_size * sizeof(*shared_memory);
 
-	if ((shmsize + sizeof(m)) > BUF_SIZE) {
+	if ((shmsize + tstsize + sizeof(m)) > BUF_SIZE) {
 		fprintf(stderr, "Epic fail - buffer is not big enought "
 			"to store memory config and data\n"
 			"Change BUF_SIZE or memory configuration\n");
@@ -319,7 +331,9 @@ void send_memory_config(int sd)
 	}
 
 	memcpy(&buf[sizeof(m)], shared_memory, shmsize);
-	rv = send(sd, buf, sizeof(m) + shmsize, MSG_NOSIGNAL | MSG_WAITALL);
+	memcpy(&buf[sizeof(m) + shmsize], (void *)timestamps, tstsize);
+	rv = send(sd, buf, sizeof(m) + shmsize + tstsize,
+		  MSG_NOSIGNAL | MSG_WAITALL);
 	if (rv == -1) {
 		rv = errno;
 		fprintf(stderr, "Error during send: %s\n", strerror(rv));
@@ -556,8 +570,8 @@ int main(int argc, char *argv[])
 				    sizeof(address_book[0].hostname));
 			short *pport = (short *)rp->ai_addr->sa_data;
 			address_book[addbookidx].port =
-			    ntohs(((struct sockaddr_in *)rp->
-				   ai_addr)->sin_port);
+			    ntohs(((struct sockaddr_in *)rp->ai_addr)->
+				  sin_port);
 			fprintf(stderr, "I am: %s:%i \n",
 				address_book[addbookidx].hostname,
 				address_book[addbookidx].port);
@@ -702,8 +716,8 @@ int main(int argc, char *argv[])
 							rv = errno;
 							fprintf(stderr,
 								"Error - recv() target %d, %s\n",
-								targetlist[i].
-								sd,
+								targetlist
+								[i].sd,
 								strerror(rv));
 						} else {
 							fprintf(stderr,
@@ -737,7 +751,6 @@ int main(int argc, char *argv[])
 		if ((targetcount > 0) || (clientcount > 0)) {
 			handle_send();
 		}
-		print_shared_memory();
 
 		sleep(1);
 	}
