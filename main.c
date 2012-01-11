@@ -41,6 +41,7 @@ struct memory_config {
 struct write_message {
 	char msgtype;
 	time_t timestamp;
+        int index;
 } __attribute__ ((__packed__));
 
 struct address_book_s {
@@ -219,7 +220,7 @@ void handle_message(int sd, char *bf, size_t bs)
 			allocate_shared_mem();
 			int msize =
 			    memory_size * chunk_size * sizeof(*shared_memory);
-			memcpy(shared_memory, &bf[sizeof(m)], msize);
+			memcpy(shared_memory, &bf[sizeof(*m)], msize);
 			fprintf(stderr, "Set memory to: %i x %i\n", memory_size,
 				chunk_size);
 			print_shared_memory();
@@ -248,15 +249,24 @@ void handle_message(int sd, char *bf, size_t bs)
 	} else if (strncmp(bf, "w", 1) == 0) {
 		/* write */
 		fprintf(stderr, "Received write\n");
-		int index = *((int *)&buf[1]);
+                struct write_message *m = (struct write_message *) buf;
+		int index = m->index;
+                time_t timestamp = m->timestamp;
+
+                if (timestamps[index] > m->timestamp) {
+                        fprintf(stderr, "I have better (newer) value!!!\n");
+                        return;
+                }
+
+                p = buf + sizeof(*m);
+
+		memcpy(&shared_memory[chunk_size * index], p, chunk_size);
 		fprintf(stderr, "%i\t", index);
 		for (i = 0; i < chunk_size; ++i) {
 			fprintf(stderr, "%02X",
 				shared_memory[(chunk_size * index) + i]);
 		}
 		fprintf(stderr, "\n");
-		void *p = &buf[1 + sizeof(int)];
-		memcpy(&shared_memory[chunk_size * index], p, chunk_size);
 	}
 }
 
@@ -332,6 +342,7 @@ int generate_write_op()
 {
 	unsigned char chunk[chunk_size];
 	int index = (int)((double)((double)random() / RAND_MAX) * memory_size);
+        timestamps[index] = time(NULL);
 	int i;
 	fprintf(stderr, "new chunk %i:\n", index);
 	for (i = 0; i < chunk_size; ++i) {
@@ -363,7 +374,6 @@ void handle_send()
 //              /* read */
 //      }
 	struct write_message m;
-	long int r = random() % 100000000;
 	double rate = (double)random() / RAND_MAX;
 
 	if (rate < 0.3) {
@@ -371,22 +381,19 @@ void handle_send()
 			(int)(rate * memory_size), memory_size);
 		int index = generate_write_op();
 		void *pi;
-		int *pint;
 		m.msgtype = 'w';
-		m.timestamp = time(NULL);
-		buf[0] = 'w';
-		pint = (int *)&buf[1];
-		*pint = index;
-		pi = (void *)pint;
-		pi = pi + sizeof(index);
+                m.timestamp = timestamps[index];
+                m.index = index;
+                pi = memcpy(buf, (void *) &m, sizeof(m));
+		pi = pi + sizeof(m);
 		pi = memcpy(pi, &shared_memory[chunk_size * index], chunk_size);
-		pi = pi + chunk_size + 1;
+		pi = pi + chunk_size;
 
 		/* send only to targets (do not duplicate) */
 		if (targetcount > 0) {
 			for (i = 0; i < targetcount; ++i) {
 				send(targetlist[i].sd, buf,
-				     pi - (void *)&buf, MSG_NOSIGNAL);
+				     pi - (void *)&buf, MSG_NOSIGNAL | MSG_WAITALL);
 			}
 		}
 
