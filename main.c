@@ -156,6 +156,11 @@ void hostlist_insert(struct address_book_s it)
 		    (it.hostname, address_book[i].hostname,
 		     sizeof(address_book[i].hostname)) == 0) {
 			if (it.port == address_book[i].port) {
+				fprintf(stderr,
+					"Already connected %s:%i %s:%i\n",
+					address_book[i].hostname,
+					address_book[i].port, it.hostname,
+					it.port);
 				return;
 			}
 		}
@@ -170,21 +175,22 @@ void hostlist_insert(struct address_book_s it)
 
 void print_shared_memory()
 {
-        int m, c;
-        if (shared_memory != NULL) {
-                fprintf(stderr, "My memory:\n\t");
-                for (m=0; m<memory_size; ++m) {
-                        for (c=0; c<chunk_size; ++c) {
-                                fprintf(stderr, "%02X", shared_memory[m*c + c]);
-                        }
-                        if ((m%5) == 4) {
-                                fprintf(stderr, "\n\t");
-                        } else {
-                                fprintf(stderr, " ");
-                        }
-                }
-                fprintf(stderr, "\n");
-        }
+	int m, c;
+	if (shared_memory != NULL) {
+		fprintf(stderr, "My memory:\n\t");
+		for (m = 0; m < memory_size; ++m) {
+			for (c = 0; c < chunk_size; ++c) {
+				fprintf(stderr, "%02X",
+					shared_memory[m * c + c]);
+			}
+			if ((m % 5) == 4) {
+				fprintf(stderr, "\n\t");
+			} else {
+				fprintf(stderr, " ");
+			}
+		}
+		fprintf(stderr, "\n");
+	}
 }
 
 /*|
@@ -206,11 +212,12 @@ void handle_message(int sd, char *bf, size_t bs)
 			memory_size = m->memory_size;
 			chunk_size = m->chunk_size;
 			allocate_shared_mem();
-                        int msize = memory_size * chunk_size * sizeof(*shared_memory);
-                        memcpy(shared_memory, &bf[sizeof(m)], msize);
+			int msize =
+			    memory_size * chunk_size * sizeof(*shared_memory);
+			memcpy(shared_memory, &bf[sizeof(m)], msize);
 			fprintf(stderr, "Set memory to: %i x %i\n", memory_size,
 				chunk_size);
-                        print_shared_memory();
+			print_shared_memory();
 		} else {
 			if (memory_size != m->memory_size) {
 				fprintf(stderr,
@@ -237,12 +244,12 @@ void handle_message(int sd, char *bf, size_t bs)
 		/* write */
 		fprintf(stderr, "Received write\n");
 		int index = *((int *)&buf[1]);
-                fprintf(stderr, "%i\t", index);
+		fprintf(stderr, "%i\t", index);
 		for (i = 0; i < chunk_size; ++i) {
 			fprintf(stderr, "%02X",
 				shared_memory[(chunk_size * index) + i]);
 		}
-                fprintf(stderr, "\n");
+		fprintf(stderr, "\n");
 		void *p = &buf[1 + sizeof(int)];
 		memcpy(&shared_memory[chunk_size * index], p, chunk_size);
 	}
@@ -261,8 +268,9 @@ int find_index_sd(clientl_t * list, int lcount, int sd)
 
 void close_remove_id(clientl_t * list, int *lcount, int i)
 {
-	fprintf(stderr, "Removing from address book (%i)\n", addbookidx);
+	fprintf(stderr, "Closing connection with (%i)\n", list[i].sd);
 	shutdown(list[i].sd, SHUT_RDWR);
+	close(list[i].sd);
 	list[i].sd = list[*lcount - 1].sd;
 	list[i].addr = list[*lcount - 1].addr;
 	list[i].addrlen = list[*lcount - 1].addrlen;
@@ -284,17 +292,17 @@ void send_memory_config(int sd)
 	m.msgtype = 'm';
 	m.memory_size = memory_size;
 	m.chunk_size = chunk_size;
-        memcpy(buf, &m, sizeof(m));
-        int shmsize = memory_size*chunk_size*sizeof(*shared_memory);
+	memcpy(buf, &m, sizeof(m));
+	int shmsize = memory_size * chunk_size * sizeof(*shared_memory);
 
-        if ((shmsize + sizeof(m)) > BUF_SIZE) {
-                fprintf(stderr, "Epic fail - buffer is not big enought "
-                                "to store memory config and data\n"
-                                "Change BUF_SIZE or memory configuration\n");
-                exit(2);
-        }
+	if ((shmsize + sizeof(m)) > BUF_SIZE) {
+		fprintf(stderr, "Epic fail - buffer is not big enought "
+			"to store memory config and data\n"
+			"Change BUF_SIZE or memory configuration\n");
+		exit(2);
+	}
 
-        memcpy(&buf[sizeof(m)], shared_memory, shmsize);
+	memcpy(&buf[sizeof(m)], shared_memory, shmsize);
 	rv = send(sd, buf, sizeof(m) + shmsize, MSG_NOSIGNAL | MSG_WAITALL);
 	if (rv == -1) {
 		rv = errno;
@@ -318,7 +326,7 @@ void send_host_list(int sd)
 int generate_write_op()
 {
 	unsigned char chunk[chunk_size];
-	int index = (int)((double) ((double)random() / RAND_MAX) * memory_size);
+	int index = (int)((double)((double)random() / RAND_MAX) * memory_size);
 	int i;
 	fprintf(stderr, "new chunk %i:\n", index);
 	for (i = 0; i < chunk_size; ++i) {
@@ -368,9 +376,8 @@ void handle_send()
 		pi = pi + sizeof(index);
 		pi = memcpy(pi, &shared_memory[chunk_size * index], chunk_size);
 		pi = pi + chunk_size + 1;
-                
 
-                /* send only to targets (do not duplicate) */
+		/* send only to targets (do not duplicate) */
 		if (targetcount > 0) {
 			for (i = 0; i < targetcount; ++i) {
 				send(targetlist[i].sd, buf,
@@ -530,8 +537,8 @@ int main(int argc, char *argv[])
 				    sizeof(address_book[0].hostname));
 			short *pport = (short *)rp->ai_addr->sa_data;
 			address_book[addbookidx].port =
-			    ntohs(((struct sockaddr_in *)rp->
-				   ai_addr)->sin_port);
+			    ntohs(((struct sockaddr_in *)rp->ai_addr)->
+				  sin_port);
 			fprintf(stderr, "I am: %s:%i \n",
 				address_book[addbookidx].hostname,
 				address_book[addbookidx].port);
@@ -577,9 +584,9 @@ int main(int argc, char *argv[])
 	}
 
 	fprintf(stderr, "before mainloop:\n"
-		"\tsfd: %i\n" "\tmaster_flag: %i\n", sfd, master_flag);
+		"\tsfd: %i\n\tmaster_flag: %i\n", sfd, master_flag);
 
-        print_shared_memory();
+	print_shared_memory();
 
 	signal(SIGINT, handle_signal);
 
@@ -672,13 +679,19 @@ int main(int argc, char *argv[])
 					switch (rv) {
 					case 0:	/* shutdown */
 					case -1:	/* error */
-						if (rv = -1) {
+						if (rv == -1) {
 							rv = errno;
 							fprintf(stderr,
 								"Error - recv() target %d, %s\n",
 								targetlist
 								[i].sd,
 								strerror(rv));
+							fprintf(stderr,
+								"Clientlist %i, Targetlist %i, address_book %i, tfdaddridx %i\n",
+								clientcount,
+								targetcount,
+								addbookidx,
+								tfdaddridx);
 						} else {
 							fprintf(stderr,
 								"Got goodbye from target %i\n",
@@ -708,16 +721,19 @@ int main(int argc, char *argv[])
 
 		sleep(1);
 	}
-        print_shared_memory();
+	print_shared_memory();
 	free(shared_memory);
 	free(timestamps);
 	for (i = 0; i < clientcount; ++i) {
 		shutdown(clientlist[i].sd, SHUT_RDWR);
+		close(clientlist[i].sd);
 	}
 	for (i = 0; i < targetcount; ++i) {
 		shutdown(targetlist[i].sd, SHUT_RDWR);
+		close(targetlist[i].sd);
 	}
 	shutdown(sfd, SHUT_RDWR);
+	close(sfd);
 	puts("Died...");
 
 	return 0;
