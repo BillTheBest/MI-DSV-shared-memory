@@ -41,7 +41,7 @@ struct memory_config {
 struct write_message {
 	char msgtype;
 	time_t timestamp;
-        int index;
+	int index;
 } __attribute__ ((__packed__));
 
 struct address_book_s {
@@ -139,10 +139,11 @@ int connect_2_master(char *hostname, char *target_port)
 	     result->ai_addrlen) == -1) {
 		freeaddrinfo(result);
 		fprintf(stderr, "Could not connect\n");
-                fprintf(stderr, "addressbook (%i):\n", addbookidx);
-                for (i=0; i<addbookidx; ++i) {
-                        fprintf(stderr, "%i: %s:%i\n", i, address_book[i].hostname, address_book[i].port);
-                }
+		fprintf(stderr, "addressbook (%i):\n", addbookidx);
+		for (i = 0; i < addbookidx; ++i) {
+			fprintf(stderr, "%i: %s:%i\n", i,
+				address_book[i].hostname, address_book[i].port);
+		}
 
 		//close(targetlist[targetcount].sd);
 		//close(sfd);
@@ -181,13 +182,13 @@ void hostlist_insert(struct address_book_s it)
 
 void print_shared_memory()
 {
-	int m, c;
+	int m, c, i;
 	if (shared_memory != NULL) {
 		fprintf(stderr, "My memory:\n\t");
 		for (m = 0; m < memory_size; ++m) {
 			for (c = 0; c < chunk_size; ++c) {
 				fprintf(stderr, "%02X",
-					shared_memory[m * c + c]);
+					shared_memory[m * chunk_size + c]);
 			}
 			if ((m % 5) == 4) {
 				fprintf(stderr, "\n\t");
@@ -249,16 +250,16 @@ void handle_message(int sd, char *bf, size_t bs)
 	} else if (strncmp(bf, "w", 1) == 0) {
 		/* write */
 		fprintf(stderr, "Received write\n");
-                struct write_message *m = (struct write_message *) buf;
+		struct write_message *m = (struct write_message *)buf;
 		int index = m->index;
-                time_t timestamp = m->timestamp;
+		time_t timestamp = m->timestamp;
 
-                if (timestamps[index] > m->timestamp) {
-                        fprintf(stderr, "I have better (newer) value!!!\n");
-                        return;
-                }
+		if (timestamps[index] > m->timestamp) {
+			fprintf(stderr, "I have better (newer) value!!!\n");
+			return;
+		}
 
-                p = buf + sizeof(*m);
+		p = buf + sizeof(*m);
 
 		memcpy(&shared_memory[chunk_size * index], p, chunk_size);
 		fprintf(stderr, "%i\t", index);
@@ -342,7 +343,7 @@ int generate_write_op()
 {
 	unsigned char chunk[chunk_size];
 	int index = (int)((double)((double)random() / RAND_MAX) * memory_size);
-        timestamps[index] = time(NULL);
+	timestamps[index] = time(NULL);
 	int i;
 	fprintf(stderr, "new chunk %i:\n", index);
 	for (i = 0; i < chunk_size; ++i) {
@@ -382,9 +383,9 @@ void handle_send()
 		int index = generate_write_op();
 		void *pi;
 		m.msgtype = 'w';
-                m.timestamp = timestamps[index];
-                m.index = index;
-                pi = memcpy(buf, (void *) &m, sizeof(m));
+		m.timestamp = timestamps[index];
+		m.index = index;
+		pi = memcpy(buf, (void *)&m, sizeof(m));
 		pi = pi + sizeof(m);
 		pi = memcpy(pi, &shared_memory[chunk_size * index], chunk_size);
 		pi = pi + chunk_size;
@@ -393,7 +394,8 @@ void handle_send()
 		if (targetcount > 0) {
 			for (i = 0; i < targetcount; ++i) {
 				send(targetlist[i].sd, buf,
-				     pi - (void *)&buf, MSG_NOSIGNAL | MSG_WAITALL);
+				     pi - (void *)&buf,
+				     MSG_NOSIGNAL | MSG_WAITALL);
 			}
 		}
 
@@ -554,8 +556,8 @@ int main(int argc, char *argv[])
 				    sizeof(address_book[0].hostname));
 			short *pport = (short *)rp->ai_addr->sa_data;
 			address_book[addbookidx].port =
-			    ntohs(((struct sockaddr_in *)rp->ai_addr)->
-				  sin_port);
+			    ntohs(((struct sockaddr_in *)rp->
+				   ai_addr)->sin_port);
 			fprintf(stderr, "I am: %s:%i \n",
 				address_book[addbookidx].hostname,
 				address_book[addbookidx].port);
@@ -700,7 +702,8 @@ int main(int argc, char *argv[])
 							rv = errno;
 							fprintf(stderr,
 								"Error - recv() target %d, %s\n",
-								targetlist[i].sd,
+								targetlist[i].
+								sd,
 								strerror(rv));
 						} else {
 							fprintf(stderr,
@@ -734,6 +737,7 @@ int main(int argc, char *argv[])
 		if ((targetcount > 0) || (clientcount > 0)) {
 			handle_send();
 		}
+		print_shared_memory();
 
 		sleep(1);
 	}
