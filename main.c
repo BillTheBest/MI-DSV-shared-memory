@@ -144,6 +144,7 @@ int connect_2_master(char *hostname, char *target_port)
 			fprintf(stderr, "%i: %s:%i\n", i,
 				address_book[i].hostname, address_book[i].port);
 		}
+                return -1;
 
 		//close(targetlist[targetcount].sd);
 		//close(sfd);
@@ -175,9 +176,10 @@ void hostlist_insert(struct address_book_s it)
 	char sport[6];
 	i = snprintf(sport, 6, "%i", it.port);
 	sport[5] = 0;
-	printf("%i %s", it.port, sport);
 	int fd = connect_2_master(it.hostname, sport);
-	insert_fd_to_addrbook(fd, it.hostname, sport);
+        if (fd != -1) {
+                insert_fd_to_addrbook(fd, it.hostname, sport);
+        }
 }
 
 void print_shared_memory()
@@ -295,7 +297,9 @@ int find_index_sd(clientl_t * list, int lcount, int sd)
 
 void close_remove_id(clientl_t * list, int *lcount, int i)
 {
-	fprintf(stderr, "Closing connection with (%i)\n", list[i].sd);
+        char addrs[INET_ADDRSTRLEN];
+//inet_ntop(AF_INET, list[i].addr, addrs, INET_ADDRSTRLEN);
+	fprintf(stderr, "Closing connection with (%i) %s\n", list[i].sd, addrs );
 	shutdown(list[i].sd, SHUT_RDWR);
 	close(list[i].sd);
 	list[i].sd = list[*lcount - 1].sd;
@@ -606,9 +610,13 @@ int main(int argc, char *argv[])
 			sizeof(address_book[0].hostname));
 		sscanf(target_port, "%i", &address_book[addbookidx++].port);
 		int fd = connect_2_master(target_addr, target_port);
-		insert_fd_to_addrbook(fd, target_addr, target_port);
-		/* send own address and port to structure */
-		send_host_list(targetlist[0].sd);	/* send to target */
+                if (fd != -1) {
+                        insert_fd_to_addrbook(fd, target_addr, target_port);
+                        /* send own address and port to structure */
+                        send_host_list(targetlist[0].sd);	/* send to target */
+                } else {
+                        is_terminated = 1;
+                }
 	} else {
 		/* allocate given chunk of memory */
 		allocate_shared_mem();
