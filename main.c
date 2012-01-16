@@ -144,11 +144,8 @@ int connect_2_master(char *hostname, char *target_port)
 			fprintf(stderr, "%i: %s:%i\n", i,
 				address_book[i].hostname, address_book[i].port);
 		}
-                return -1;
+		return -1;
 
-		//close(targetlist[targetcount].sd);
-		//close(sfd);
-		//exit(EXIT_FAILURE);
 	}
 	fprintf(stderr, "master sd: %d\n", targetlist[targetcount].sd);
 	freeaddrinfo(result);
@@ -164,11 +161,9 @@ void hostlist_insert(struct address_book_s it)
 		    (it.hostname, address_book[i].hostname,
 		     sizeof(address_book[i].hostname)) == 0) {
 			if (it.port == address_book[i].port) {
-				fprintf(stderr,
-					"Already connected %s:%i %s:%i\n",
+				fprintf(stderr, "Host in address book %s:%i\n",
 					address_book[i].hostname,
-					address_book[i].port, it.hostname,
-					it.port);
+					address_book[i].port);
 				return;
 			}
 		}
@@ -177,9 +172,9 @@ void hostlist_insert(struct address_book_s it)
 	i = snprintf(sport, 6, "%i", it.port);
 	sport[5] = 0;
 	int fd = connect_2_master(it.hostname, sport);
-        if (fd != -1) {
-                insert_fd_to_addrbook(fd, it.hostname, sport);
-        }
+	if (fd != -1) {
+		insert_fd_to_addrbook(fd, it.hostname, sport);
+	}
 }
 
 void print_shared_memory()
@@ -222,7 +217,7 @@ void handle_message(int sd, char *bf, size_t bs)
 	int i;
 	void *p;
 	struct memory_config *m;
-	fprintf(stderr, "from %i got message len %i: %s\n", sd, bs, bf);
+	fprintf(stderr, "from %i got message len %i: %c...\n", sd, bs, *bf);
 	if (strncmp(bf, "m", 1) == 0) {
 		/* memory configuration */
 		m = (struct memory_config *)bf;
@@ -297,9 +292,8 @@ int find_index_sd(clientl_t * list, int lcount, int sd)
 
 void close_remove_id(clientl_t * list, int *lcount, int i)
 {
-        char addrs[INET_ADDRSTRLEN];
-//inet_ntop(AF_INET, list[i].addr, addrs, INET_ADDRSTRLEN);
-	fprintf(stderr, "Closing connection with (%i) %s\n", list[i].sd, addrs );
+	char addrs[INET_ADDRSTRLEN];
+	fprintf(stderr, "Closing connection with (%i)\n", list[i].sd);
 	shutdown(list[i].sd, SHUT_RDWR);
 	close(list[i].sd);
 	list[i].sd = list[*lcount - 1].sd;
@@ -381,21 +375,17 @@ int generate_write_op()
  */
 void handle_send()
 {
+	static uint64_t counter = 0;
+
 	if (shared_memory == NULL) {
 		return;		/* memory is still not configured */
 	}
 
 	int i;
-	//fprintf(stderr, "send\n");
-//      if (((double) random()/RAND_MAX) >= 0.5) {
-//              /* write */
-//      } else {
-//              /* read */
-//      }
 	struct write_message m;
 	double rate = (double)random() / RAND_MAX;
 
-	if (rate < 0.3) {
+	if (rate < 0.00001) {
 		fprintf(stderr, "%f, index/size %i/%i\n", rate,
 			(int)(rate * memory_size), memory_size);
 		int index = generate_write_op();
@@ -424,7 +414,7 @@ void handle_send()
 		}
 		fprintf(stderr, "\n");
 	} else {
-		fprintf(stderr, " ");
+		fprintf(stderr, "\r%d", counter++);
 	}
 }
 
@@ -610,13 +600,13 @@ int main(int argc, char *argv[])
 			sizeof(address_book[0].hostname));
 		sscanf(target_port, "%i", &address_book[addbookidx++].port);
 		int fd = connect_2_master(target_addr, target_port);
-                if (fd != -1) {
-                        insert_fd_to_addrbook(fd, target_addr, target_port);
-                        /* send own address and port to structure */
-                        send_host_list(targetlist[0].sd);	/* send to target */
-                } else {
-                        is_terminated = 1;
-                }
+		if (fd != -1) {
+			insert_fd_to_addrbook(fd, target_addr, target_port);
+			/* send own address and port to structure */
+			send_host_list(targetlist[0].sd);	/* send to target */
+		} else {
+			is_terminated = 1;
+		}
 	} else {
 		/* allocate given chunk of memory */
 		allocate_shared_mem();
@@ -663,9 +653,7 @@ int main(int argc, char *argv[])
 
 		if (select(maxfd, &fdclientset, NULL, NULL, &timeout) == -1) {
 			rv == errno;
-			fprintf(stderr,
-				"Error - select() failed maxfd %i: %s\n", maxfd,
-				strerror(rv));
+			fprintf(stderr, "Error - select() failed maxfd\n");
 		}
 
 		/* test all fd's after select */
@@ -692,10 +680,9 @@ int main(int argc, char *argv[])
 						} else {
 							rv = errno;
 							fprintf(stderr,
-								"Error - recv() client %d, %s\n",
-								clientlist
-								[i].sd,
-								strerror(rv));
+								"Error - recv() client %d\n",
+								clientlist[i].
+								sd);
 						}
 						close_remove_id(clientlist,
 								&clientcount,
@@ -723,21 +710,14 @@ int main(int argc, char *argv[])
 						if (rv == -1) {
 							rv = errno;
 							fprintf(stderr,
-								"Error - recv() target %d, %s\n",
+								"Error - recv() target %d\n",
 								targetlist
-								[i].sd,
-								strerror(rv));
+								[i].sd);
 						} else {
 							fprintf(stderr,
 								"Got goodbye from target %i\n",
-								targetlist
-								[i].sd);
-							fprintf(stderr,
-								"Clientlist %i, Targetlist %i, address_book %i, tfdaddridx %i\n",
-								clientcount,
-								targetcount,
-								addbookidx,
-								tfdaddridx);
+								targetlist[i].
+								sd);
 						}
 						int disc_node =
 						    targetlist[i].sd;
@@ -757,10 +737,16 @@ int main(int argc, char *argv[])
 		}
 
 		if ((targetcount > 0) || (clientcount > 0)) {
-			handle_send();
+			if (((double)random() / RAND_MAX) >= 0.3) {
+				/* write */
+				handle_send();
+
+			} else {
+				/* read */
+			}
 		}
 
-		sleep(1);
+		sleep(0.7);
 	}
 	print_shared_memory();
 	free(shared_memory);

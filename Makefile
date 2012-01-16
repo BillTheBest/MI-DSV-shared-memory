@@ -1,7 +1,5 @@
 
 
-all: dshm
+all: main.c
+	gcc -g main.c -o dsvsm
 
-
-dshm: main.c
-	gcc -g main.c
